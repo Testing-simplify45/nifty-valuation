@@ -247,7 +247,7 @@ LOG_COLS = ["Run time", "Spot", "Expiry", "Strike", "Type", "Bid", "Ask", "Mid",
 
 
 class SheetSink:
-    TABS = ["Master", "Expiry Summary", "Status", "Log"]
+    TABS = ["Master", "All Options", "Expiry Summary", "Status", "Log"]
 
     def __init__(self, cfg):
         import gspread
@@ -263,7 +263,7 @@ class SheetSink:
             self.ws[t] = have[t]
         if "Log" in self.new:
             self.ws["Log"].update([LOG_COLS])
-        self.prev, self.fails, self.formatted = {}, 0, "Master" not in self.new
+        self.prev, self.fails, self.formatted = {}, 0, "Master" not in self.new and "All Options" not in self.new
 
     def _pad(self, tab, m):
         pr, pc = self.prev.get(tab, (0, 0))
@@ -271,11 +271,14 @@ class SheetSink:
         self.prev[tab] = (rows, cols)
         return [list(r) + [""] * (cols - len(r)) for r in m] + [[""] * cols for _ in range(rows - len(m))]
 
-    def write(self, master, summary, status_rows):
-        mats = {"Master": outputs.to_matrix(master), "Expiry Summary": outputs.to_matrix(summary), "Status": status_rows}
+    def write(self, flagged, all_options, summary, status_rows):
+        cols = list(all_options.columns)
+        master_m = outputs.to_matrix(flagged) if len(flagged) else [cols, ["No options are flagged right now"]]
+        mats = {"Master": master_m, "All Options": outputs.to_matrix(all_options),
+                "Expiry Summary": outputs.to_matrix(summary), "Status": status_rows}
         self._push({t: self._pad(t, m) for t, m in mats.items()})
-        if not self.formatted and len(master):
-            self._format_master(list(master.columns))
+        if not self.formatted:
+            self._format(cols)
 
     def status_only(self, status_rows):
         self._push({"Status": self._pad("Status", status_rows)})
@@ -296,23 +299,25 @@ class SheetSink:
             log.warning("Google Sheet write failed (%s). Waiting %ss.", e, wait)
             time.sleep(wait)
 
-    def _format_master(self, cols):
-        """Once: red/green Status cells, bold frozen header."""
+    def _format(self, cols):
+        """Once: red/green Status cells and a frozen header on Master and All Options."""
         try:
-            sid, c = self.ws["Master"].id, cols.index("Status")
-            rng = [{"sheetId": sid, "startRowIndex": 1, "startColumnIndex": c, "endColumnIndex": c + 1}]
+            c, reqs = cols.index("Status"), []
 
-            def rule(text, r, g, b):
+            def rule(sid, text, r, g, b):
+                rng = [{"sheetId": sid, "startRowIndex": 1, "startColumnIndex": c, "endColumnIndex": c + 1}]
                 return {"addConditionalFormatRule": {"index": 0, "rule": {"ranges": rng, "booleanRule": {
                     "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": text}]},
                     "format": {"backgroundColor": {"red": r, "green": g, "blue": b}}}}}}
-            self.sh.batch_update({"requests": [
-                rule("Overvalued", 0.97, 0.79, 0.79), rule("Undervalued", 0.79, 0.91, 0.79),
-                rule("Low confidence", 0.9, 0.9, 0.9),
-                {"updateSheetProperties": {"properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1}},
-                                           "fields": "gridProperties.frozenRowCount"}}]})
+            for tab in ("Master", "All Options"):
+                sid = self.ws[tab].id
+                reqs += [rule(sid, "Overvalued", 0.97, 0.79, 0.79), rule(sid, "Undervalued", 0.79, 0.91, 0.79),
+                         rule(sid, "Low confidence", 0.9, 0.9, 0.9),
+                         {"updateSheetProperties": {"properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1}},
+                                                    "fields": "gridProperties.frozenRowCount"}}]
+            self.sh.batch_update({"requests": reqs})
         except Exception as e:
-            log.warning("Could not colour the Master tab (not critical): %s", e)
+            log.warning("Could not colour the tabs (not critical): %s", e)
         self.formatted = True
 
     def append_log(self, rows):
@@ -328,8 +333,9 @@ class PrintSink:
         os.makedirs("live_out", exist_ok=True)
         self.writes = 0
 
-    def write(self, master, summary, status_rows):
-        master.to_csv("live_out/Master.csv", index=False)
+    def write(self, flagged, all_options, summary, status_rows):
+        flagged.to_csv("live_out/Master.csv", index=False)
+        all_options.to_csv("live_out/All_Options.csv", index=False)
         summary.to_csv("live_out/Expiry_Summary.csv", index=False)
         pd.DataFrame(status_rows).to_csv("live_out/Status.csv", index=False, header=False)
         self.writes += 1
@@ -409,7 +415,7 @@ def main():
                                             [["Note", n] for n in notes])); continue
                 flagged = master[master["Status"].isin(["Overvalued", "Undervalued"])]
                 state = "LIVE" if silent < 30 else f"LIVE (no ticks for {int(silent)}s: market closed or feed quiet)"
-                sink.write(master, summary, status(state, now,
+                sink.write(flagged.reset_index(drop=True), master, summary, status(state, now,
                            [["Options flagged", len(flagged)], ["Calc time (s)", round(time.time() - t_start, 2)]]
                            + [["Note", n] for n in notes]))
 
