@@ -108,31 +108,39 @@ if not res:
     st.info("Press the button above to start. Use Demo first to check everything works.")
     st.stop()
 
-master, summary, log_new = res["master"], res["summary"], res["log"]
+all_opts, summary, log_new = res["master"], res["summary"], res["log"]
+flagged = all_opts[all_opts["Status"].isin(["Overvalued", "Undervalued"])].reset_index(drop=True)
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Nifty spot", f"{res['spot']:,.0f}" if res["spot"] else "-")
 c2.metric("India VIX", f"{res['vix']:.2f}" if res["vix"] else "-")
 c3.metric("Forecast realised vol", f"{res['fvol']*100:.1f}%", help=f"Source: {res['src']}")
-c4.metric("Options flagged", int(master["Status"].isin(["Overvalued", "Undervalued"]).sum()))
+c4.metric("Options flagged", len(flagged))
 for n in res["notes"]:
     st.warning(n)
 
-tab_master, tab_sum, tab_log = st.tabs(["Master", "Expiry Summary", "Log (this run)"])
+tab_master, tab_all, tab_sum, tab_log = st.tabs(["Master (flagged only)", "All options", "Expiry Summary", "Log (this run)"])
+colours = {"Overvalued": "background-color:#f8c9c9", "Undervalued": "background-color:#c9e8c9",
+           "Low confidence": "background-color:#e6e6e6"}
 with tab_master:
+    if flagged.empty:
+        st.info("No option is flagged right now: no strike where both models agree and the gap beats the spread plus costs.")
+    else:
+        st.dataframe(flagged.style.map(lambda v: colours.get(v, ""), subset=["Status"]).format(precision=2, na_rep=""),
+                     width="stretch", height=420, hide_index=True)
+    st.caption("Only options where BOTH models agree and the gap is bigger than the bid-ask spread plus your cost setting. "
+               "Diff = market mid minus model fair price: positive = market more expensive than the model.")
+with tab_all:
     f1, f2, f3 = st.columns(3)
-    exp = f1.selectbox("Expiry", ["All"] + list(master["Expiry"].unique()))
+    exp = f1.selectbox("Expiry", ["All"] + list(all_opts["Expiry"].unique()))
     typ = f2.selectbox("Type", ["Both", "CE", "PE"])
-    stat = f3.selectbox("Status", ["All"] + sorted(master["Status"].unique()))
-    view = master
+    stat = f3.selectbox("Status", ["All"] + sorted(all_opts["Status"].unique()))
+    view = all_opts
     if exp != "All": view = view[view["Expiry"] == exp]
     if typ != "Both": view = view[view["Type"] == typ]
     if stat != "All": view = view[view["Status"] == stat]
-    colours = {"Overvalued": "background-color:#f8c9c9", "Undervalued": "background-color:#c9e8c9",
-               "Low confidence": "background-color:#e6e6e6"}
     st.dataframe(view.style.map(lambda v: colours.get(v, ""), subset=["Status"]).format(precision=2, na_rep=""),
                  width="stretch", height=520, hide_index=True)
-    st.caption("Diff = market mid minus model fair price. Positive = market is more expensive than the model. "
-               "Hurdle = bid-ask spread + your cost setting.")
+    st.caption("Every option with both model verdicts, for checking the work. Mixed = the two models disagree.")
 with tab_sum:
     st.dataframe(summary.style.format(precision=2, na_rep=""), width="stretch", hide_index=True)
     st.caption("Straddle is read off the fitted surface, so one bad ATM quote cannot distort it. "
@@ -143,14 +151,14 @@ with tab_log:
 # ------------------------------------------------------------- outputs
 st.divider()
 st.subheader("Send results")
-xl = outputs.to_excel_bytes(master, summary, log_new)
+xl = outputs.to_excel_bytes(flagged, summary, log_new, all_opts)
 st.download_button("Download as Excel", xl, file_name="nifty_valuation.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 sheet_id, sa = secret("SHEET_ID"), secret("gcp_service_account")
 if sheet_id and sa:
     if st.button("Update Google Sheet"):
         try:
-            url = outputs.write_gsheet(master, summary, log_new, sheet_id, dict(sa))
+            url = outputs.write_gsheet(flagged, summary, log_new, sheet_id, dict(sa), all_opts)
             st.success(f"Google Sheet updated: {url}")
         except Exception as e:
             st.error(f"Could not write to the Google Sheet. Check that you shared it with the service-account email "
