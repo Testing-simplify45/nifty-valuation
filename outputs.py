@@ -13,17 +13,21 @@ def _clean(df):
     return out.astype(object).where(out.notna(), "")
 
 
-def to_excel_bytes(master, summary, log):
+def to_excel_bytes(master, summary, log, all_options=None):
     from openpyxl.styles import PatternFill, Font
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        for name, df in (("Master", master), ("Expiry Summary", summary), ("Log", log)):
+        sheets = [("Master", master)]
+        if all_options is not None:
+            sheets.append(("All Options", all_options))
+        sheets += [("Expiry Summary", summary), ("Log", log)]
+        for name, df in sheets:
             _clean(df).to_excel(xw, sheet_name=name, index=False)
             ws = xw.sheets[name]
             ws.freeze_panes = "A2"
             for cell in ws[1]:
                 cell.font = Font(bold=True)
-            if name == "Master" and "Status" in df.columns:
+            if name in ("Master", "All Options") and "Status" in df.columns:
                 col = list(df.columns).index("Status") + 1
                 for r in range(2, ws.max_row + 1):
                     v = ws.cell(r, col).value
@@ -35,7 +39,7 @@ def to_excel_bytes(master, summary, log):
     return buf.getvalue()
 
 
-def write_gsheet(master, summary, log_new, sheet_id, service_account_info):
+def write_gsheet(master, summary, log_new, sheet_id, service_account_info, all_options=None):
     """Replaces Master and Expiry Summary; appends new rows to Log."""
     import gspread
     gc = gspread.service_account_from_dict(service_account_info)
@@ -47,7 +51,11 @@ def write_gsheet(master, summary, log_new, sheet_id, service_account_info):
         except gspread.WorksheetNotFound:
             return sh.add_worksheet(title=title, rows=1000, cols=40)
 
-    for title, df in (("Master", master), ("Expiry Summary", summary)):
+    tabs = [("Master", master)]
+    if all_options is not None:
+        tabs.append(("All Options", all_options))
+    tabs.append(("Expiry Summary", summary))
+    for title, df in tabs:
         ws = ws_for(title)
         ws.clear()
         c = _clean(df)
