@@ -1,0 +1,8 @@
+streamlit>=1.50
+pandas
+numpy
+scipy
+openpyxl
+gspread
+google-auth
+fyers-apiv3

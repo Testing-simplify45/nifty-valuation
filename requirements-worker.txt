@@ -1,0 +1,8 @@
+pandas
+numpy
+scipy
+gspread>=6
+google-auth
+fyers-apiv3
+requests
+tzdata
